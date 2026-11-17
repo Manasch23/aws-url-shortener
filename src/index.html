@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#221c32">
+  <meta name="shortener-api-origin" content="">
+  <title>Shortlink | URL Shortener</title>
+  <style>
+    :root {
+      font-family: "DM Sans", system-ui, sans-serif;
+      color: #221c32;
+      background: #f7f5ee;
+      line-height: 1.5;
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; }
+    header { background: #221c32; color: #fff; }
+    .wrap { width: min(900px, calc(100% - 40px)); margin-inline: auto; }
+    nav {
+      display: flex; align-items: center; justify-content: space-between;
+      min-height: 70px; border-bottom: 1px solid #4c445e;
+    }
+    .brand { font-size: 1.14rem; font-weight: 800; color: #fff; text-decoration: none; }
+    .stack { color: #ded6ec; font-size: .82rem; }
+    .intro { padding: 60px 0 75px; }
+    h1 { font-size: clamp(2.55rem, 7vw, 4.45rem); line-height: 1.04; letter-spacing: -.055em; margin: 0 0 16px; }
+    .intro p { color: #ded6ec; margin: 0; font-size: 1.07rem; }
+    main { padding-bottom: 40px; margin-top: -28px; position: relative; }
+    .card {
+      padding: clamp(20px, 4vw, 34px); background: #fff; border: 1px solid #e3deeb;
+      border-radius: 20px; box-shadow: 0 6px 18px #221c320d; margin-bottom: 20px;
+    }
+    form, .row { display: flex; gap: 10px; align-items: stretch; }
+    label { display: block; font-weight: 750; margin-bottom: 9px; }
+    input, button, .button { font: inherit; border-radius: 10px; min-height: 48px; }
+    input {
+      border: 1px solid #a69bb6; padding: 10px 13px; background: #fcfbff;
+      color: inherit; min-width: 0; flex: 1;
+    }
+    button, .button {
+      cursor: pointer; border: 1px solid transparent; background: #dbf593;
+      color: #221c32; padding: 10px 17px; font-weight: 750; white-space: nowrap;
+      display: inline-flex; align-items: center; justify-content: center; text-decoration: none;
+    }
+    button:hover, .button:hover { background: #c5e976; }
+    button:disabled { opacity: .62; cursor: wait; }
+    .secondary { background: #fff; border-color: #a69bb6; }
+    .secondary:hover { background: #eee8f8; }
+    :focus-visible { outline: 3px solid #8060aa; outline-offset: 3px; }
+    .result { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 26px; }
+    h2 { font-size: 1.2rem; margin: 0 0 12px; }
+    .count { padding: 16px; background: #f1ebfa; border-radius: 12px; }
+    .count p { margin: 0 0 12px; }
+    output { display: block; font-size: 2.75rem; font-weight: 800; line-height: 1.05; margin: 8px 0; }
+    .link-actions { margin-top: 10px; }
+    .status { margin: 10px 0 0; color: #594968; }
+    .status:empty { display: none; }
+    .error { color: #9d2458; }
+    @media (max-width: 600px) {
+      nav { min-height: 62px; }
+      .intro { padding: 42px 0 59px; }
+      form, .result .row { flex-wrap: wrap; }
+      form input, .result input { flex-basis: 100%; }
+      .result { grid-template-columns: 1fr; gap: 18px; }
+      .stack { font-size: .75rem; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <nav>
+        <a class="brand" href="./">Shortlink</a>
+        <span class="stack">AWS Lambda + DynamoDB</span>
+      </nav>
+      <div class="intro">
+        <h1>URL shortener</h1>
+        <p>Create a shareable link and see how many times it’s opened.</p>
+      </div>
+    </div>
+  </header>
+  <main class="wrap">
+    <section class="card">
+      <label for="destination">Destination URL</label>
+      <form id="create-form">
+        <input id="destination" name="url" type="url" maxlength="2048"
+               placeholder="https://example.com/events/registration" required>
+        <button id="create-button" type="submit">Shorten URL</button>
+      </form>
+      <p id="create-status" class="status error" role="alert"></p>
+    </section>
+    <section id="result" class="card result" hidden>
+      <div>
+        <label for="short-url">Short link</label>
+        <div class="row">
+          <input id="short-url" type="url" readonly>
+          <button id="copy-button" class="secondary" type="button">Copy link</button>
+        </div>
+        <div class="link-actions">
+          <a id="open-link" class="button secondary" target="_blank" rel="noopener noreferrer">Open link ↗</a>
+        </div>
+        <p id="copy-status" class="status" role="status"></p>
+      </div>
+      <div class="count">
+        <h2 id="visits-label">Total visits</h2>
+        <output id="visits" aria-labelledby="visits-label">0</output>
+        <p id="stats-status" class="status error" role="alert"></p>
+        <button id="refresh-button" class="secondary" type="button">Refresh count</button>
+      </div>
+    </section>
+  </main>
+  <script>
+    const byId = (id) => document.getElementById(id);
+    const form = byId("create-form");
+    const createButton = byId("create-button");
+    const refreshButton = byId("refresh-button");
+    const shortUrl = byId("short-url");
+    const apiOrigin = document.querySelector('meta[name="shortener-api-origin"]').content || location.origin;
+    let currentCode;
+
+    async function request(path, options) {
+      const response = await fetch(new URL(path, apiOrigin), options);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "The request failed.");
+      return data;
+    }
+
+    function showResult(code, visits) {
+      currentCode = code;
+      shortUrl.value = new URL("/r/" + code, apiOrigin).href;
+      byId("open-link").href = shortUrl.value;
+      byId("visits").value = visits;
+      byId("stats-status").textContent = "";
+      byId("copy-status").textContent = "";
+      byId("result").hidden = false;
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      createButton.disabled = true;
+      byId("create-status").textContent = "";
+      try {
+        const link = await request("/api/links", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: byId("destination").value.trim() }),
+        });
+        showResult(link.code, link.visits);
+        history.replaceState(null, "", "?code=" + link.code);
+      } catch (error) {
+        byId("create-status").textContent = error.message;
+      } finally {
+        createButton.disabled = false;
+      }
+    });
+
+    byId("copy-button").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(shortUrl.value);
+        byId("copy-status").textContent = "Short link copied.";
+      } catch {
+        shortUrl.select();
+        byId("copy-status").textContent = "Link selected. Press Ctrl+C or Command+C to copy.";
+      }
+    });
+
+    refreshButton.addEventListener("click", async () => {
+      const code = currentCode;
+      refreshButton.disabled = true;
+      byId("stats-status").textContent = "";
+      try {
+        const stats = await request("/api/stats/" + code);
+        if (currentCode === code) byId("visits").value = stats.visits;
+      } catch (error) {
+        if (currentCode === code) byId("stats-status").textContent = error.message;
+      } finally {
+        refreshButton.disabled = false;
+      }
+    });
+
+    const savedCode = new URLSearchParams(location.search).get("code");
+    if (savedCode && /^[A-Za-z0-9_-]{8}$/.test(savedCode)) {
+      request("/api/stats/" + savedCode)
+        .then((stats) => {
+          if (!currentCode) showResult(stats.code, stats.visits);
+        })
+        .catch((error) => {
+          if (!currentCode) byId("create-status").textContent = error.message;
+        });
+    }
+  </script>
+</body>
+</html>

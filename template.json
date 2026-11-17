@@ -1,0 +1,121 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Campus link shortener with visit analytics",
+  "Parameters": {
+    "PagesOrigin": {
+      "Type": "String",
+      "Default": "",
+      "AllowedPattern": "(https://[a-zA-Z0-9-]+\\.github\\.io)?",
+      "Description": "Optional GitHub Pages origin allowed to call the API"
+    }
+  },
+  "Conditions": {
+    "HasPagesOrigin": {"Fn::Not": [{"Fn::Equals": [{"Ref": "PagesOrigin"}, ""]}]}
+  },
+  "Resources": {
+    "LinksTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "BillingMode": "PAY_PER_REQUEST",
+        "AttributeDefinitions": [{"AttributeName": "code", "AttributeType": "S"}],
+        "KeySchema": [{"AttributeName": "code", "KeyType": "HASH"}]
+      }
+    },
+    "ExecutionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": "lambda.amazonaws.com"},
+            "Action": "sts:AssumeRole"
+          }]
+        },
+        "Policies": [{
+          "PolicyName": "ShortenerAccess",
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem"],
+                "Resource": {"Fn::GetAtt": ["LinksTable", "Arn"]}
+              },
+              {
+                "Effect": "Allow",
+                "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+                "Resource": {"Fn::GetAtt": ["FunctionLogs", "Arn"]}
+              }
+            ]
+          }
+        }]
+      }
+    },
+    "FunctionLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {"RetentionInDays": 7}
+    },
+    "Shortener": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {"ZipFile": ""},
+        "Handler": "index.lambda_handler",
+        "Runtime": "python3.12",
+        "Timeout": 10,
+        "MemorySize": 128,
+        "Role": {"Fn::GetAtt": ["ExecutionRole", "Arn"]},
+        "Environment": {"Variables": {"LINKS_TABLE": {"Ref": "LinksTable"}}},
+        "LoggingConfig": {"LogGroup": {"Ref": "FunctionLogs"}}
+      }
+    },
+    "ShortenerUrl": {
+      "Type": "AWS::Lambda::Url",
+      "Properties": {
+        "AuthType": "NONE",
+        "Cors": {
+          "Fn::If": [
+            "HasPagesOrigin",
+            {
+              "AllowOrigins": [{"Ref": "PagesOrigin"}],
+              "AllowMethods": ["GET", "POST"],
+              "AllowHeaders": ["content-type"]
+            },
+            {"Ref": "AWS::NoValue"}
+          ]
+        },
+        "TargetFunctionArn": {"Fn::GetAtt": ["Shortener", "Arn"]}
+      }
+    },
+    "AllowPublicUrl": {
+      "Type": "AWS::Lambda::Permission",
+      "DependsOn": "ShortenerUrl",
+      "Properties": {
+        "Action": "lambda:InvokeFunctionUrl",
+        "FunctionName": {"Ref": "Shortener"},
+        "FunctionUrlAuthType": "NONE",
+        "Principal": "*"
+      }
+    },
+    "AllowPublicInvokeViaUrl": {
+      "Type": "AWS::Lambda::Permission",
+      "DependsOn": "ShortenerUrl",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {"Ref": "Shortener"},
+        "InvokedViaFunctionUrl": true,
+        "Principal": "*"
+      }
+    }
+  },
+  "Outputs": {
+    "AppUrl": {
+      "Description": "Open this URL to create links and see analytics",
+      "Value": {"Fn::GetAtt": ["ShortenerUrl", "FunctionUrl"]}
+    },
+    "TableName": {
+      "Description": "Open this table in the DynamoDB console for the demonstration",
+      "Value": {"Ref": "LinksTable"}
+    }
+  }
+}
